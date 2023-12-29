@@ -1,6 +1,19 @@
 extern crate procs;
 pub use procs::system;
 
+#[macro_export]
+macro_rules! chain {
+    [] => {
+        |x| {x}
+    };
+    [$first:expr] => {
+        |x| {$first(x)}
+    };
+    [$first:expr, $($exprs:expr),*] => {
+        |x| {(chain![$($exprs),*])($first(x))}
+    };
+}
+
 #[cfg(test)]
 mod test {
     use crate::prelude::*;
@@ -68,5 +81,26 @@ mod test {
             let res = test_system_take(test_system_gen(()).await).await;
             let _: (String,) = res;
         }
+    }
+
+    #[test]
+    fn test_chain() {
+        #[system]
+        fn f0() -> i32 {
+            233
+        }
+        #[system]
+        fn f1() -> u32 {
+            666
+        }
+        #[system]
+        fn f2(v: &mut i32) -> String {
+            let res = v.to_string();
+            *v += 1;
+            res
+        }
+        let e = chain![f0, f1, f2](());
+        let (res, ()) = take!((i32, u32, String), e);
+        assert_eq!(res, (234, 666, "233".into()));
     }
 }
