@@ -133,7 +133,7 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let elem = take_pat.elems.pop().unwrap();
         parse_quote!(#elem)
     };
-    let let_stmt: syn::Stmt = if call_operands.len() > 0 {
+    let let_stmt: syn::Stmt = if !call_operands.is_empty() {
         parse_quote! {
             let (#take_pat, _rem) = take!((#take_types), data);
         }
@@ -146,16 +146,16 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let asyncness = &func.sig.asyncness;
 
     let func_gens = &func.sig.generics.params;
-    func.sig.generics.where_clause.as_ref().map(|preds| {
+    if let Some(preds) = func.sig.generics.where_clause.as_ref() {
         for pred in preds.predicates.iter() {
             where_preds.push(pred.clone());
         }
-    });
+    }
 
     let aw: Option<proc_macro2::TokenStream> = asyncness.map(|_| parse_quote!(.await));
 
     let mut generics = take_index_generics;
-    generics.extend(func_gens.clone().into_iter());
+    generics.extend(func_gens.clone());
 
     let expanded = quote! {
 
@@ -170,6 +170,5 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #res_expr
         }
     };
-    let res = TokenStream::from(expanded);
-    res
+    TokenStream::from(expanded)
 }
