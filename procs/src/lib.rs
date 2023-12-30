@@ -145,13 +145,23 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let asyncness = &func.sig.asyncness;
 
+    let func_gens = &func.sig.generics.params;
+    func.sig.generics.where_clause.as_ref().map(|preds| {
+        for pred in preds.predicates.iter() {
+            where_preds.push(pred.clone());
+        }
+    });
+
     let aw: Option<proc_macro2::TokenStream> = asyncness.map(|_| parse_quote!(.await));
+
+    let mut generics = take_index_generics;
+    generics.extend(func_gens.clone().into_iter());
 
     let expanded = quote! {
 
         #func
 
-        #vis #asyncness fn #interface_ident<_T, #take_index_generics>(entity: _T) -> #tmp_type
+        #vis #asyncness fn #interface_ident<_T, #generics>(entity: _T) -> #tmp_type
         #where_clause
         {
             let data = entity;
