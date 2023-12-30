@@ -11,6 +11,12 @@ pub trait ComponentPut<T> {
     fn put(self, value: Self::Item) -> Self::AfterPut;
 }
 
+#[macro_export]
+macro_rules! declare_component {
+    {$($vis:vis $name:ident  (impl $($tts:tt)+);)*} => {
+        $($vis struct $name<_OBJ>(_OBJ) where _OBJ: $($tts)+;)*
+    };
+}
 
 #[macro_export]
 macro_rules! take {

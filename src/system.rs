@@ -16,7 +16,7 @@ macro_rules! chain {
 
 #[cfg(test)]
 mod test {
-    use crate::prelude::*;
+    use crate::{declare_component, prelude::*};
 
     #[test]
     fn test_one() {
@@ -105,15 +105,13 @@ mod test {
     }
     #[test]
     fn test_generic() {
-        struct StructA<T>(T)
-        where
-            T: TraitA;
+        declare_component! {
+            CompA(impl TraitA + Sized);
+            CompB(impl TraitB + Sized);
+        }
         trait TraitA {
             fn trait_func_a(&self) -> i32;
         }
-        struct StructB<T>(T)
-        where
-            T: TraitB;
         trait TraitB {
             fn trait_func_b(&self) -> f32;
         }
@@ -141,42 +139,23 @@ mod test {
         }
 
         #[system]
-        fn fa<T>(StructA(v): StructA<T>) -> i32
-        where
-            T: TraitA,
-        {
+        fn fa<T: TraitA>(CompA(v): CompA<T>) -> i32 {
             v.trait_func_a()
         }
 
         #[system]
-        fn fb<A, B>(StructB(b): &StructB<B>, StructA(a): &StructA<A>) -> String
-        where
-            A: TraitA,
-            B: TraitB,
-        {
+        fn fb<A: TraitA, B: TraitB>(CompB(b): &CompB<B>, CompA(a): &CompA<A>) -> String {
             let a = a.trait_func_a();
             let b = b.trait_func_b();
             std::format!("a={a}, b={b}")
         }
-        assert_eq!(&233, fa((StructA(AA), StructB(AA))).get() as &i32);
-        assert_eq!(&666, fa((StructB(BB), StructA(BB))).get() as &i32);
+        assert_eq!(&233, fa((CompA(AA), CompB(AA))).get() as &i32);
+        assert_eq!(&666, fa((CompB(BB), CompA(BB))).get() as &i32);
 
-        assert_eq!(
-            "a=233, b=123",
-            fb((StructA(AA), StructB(AA))).get() as &String
-        );
-        assert_eq!(
-            "a=233, b=123",
-            fb((StructB(AA), StructA(AA))).get() as &String
-        );
-        assert_eq!(
-            "a=233, b=456",
-            fb((StructA(AA), StructB(BB))).get() as &String
-        );
-        assert_eq!(
-            "a=666, b=123",
-            fb((StructB(AA), StructA(BB))).get() as &String
-        );
+        assert_eq!("a=233, b=123", fb((CompA(AA), CompB(AA))).get() as &String);
+        assert_eq!("a=233, b=123", fb((CompB(AA), CompA(AA))).get() as &String);
+        assert_eq!("a=233, b=456", fb((CompA(AA), CompB(BB))).get() as &String);
+        assert_eq!("a=666, b=123", fb((CompB(AA), CompA(BB))).get() as &String);
     }
 }
 
