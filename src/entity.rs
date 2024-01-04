@@ -11,6 +11,42 @@ pub trait TupleExtend {
     fn extend<T>(self, v: T) -> Self::AfterExtend<T>;
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::ComponentGet;
+    #[test]
+    fn extend_merge_basic() {
+        assert_eq!((233i32,), ().extend(233i32));
+        assert_eq!((233u32, 233i32,), ((233u32,)).extend(233i32));
+        assert_eq!((233i32,), ().merge((233i32,)));
+        assert_eq!((233i32, 233u32), (233u32,).merge((233i32,)));
+    }
+    #[test]
+    fn impl_trait_as_return_type() {
+        fn put_i32_u32<T: TupleMerge>(
+            v: T,
+        ) -> T::AfterMerge<(
+            Box<impl Sized + std::fmt::Display>,
+            Option<impl std::fmt::Debug + std::marker::Copy>,
+        )> {
+            v.merge((233i32.into(), 666u32.into()))
+        }
+
+        let e = put_i32_u32(("abc",));
+
+        let value_i32: &Box<_> = e.get();
+        let value_i32 = value_i32.as_ref();
+        let value_u32: &Option<_> = e.get();
+        let value_u32 = value_u32.unwrap();
+        let value_abc: &&str = e.get();
+
+        assert_eq!("233", value_i32.to_string());
+        assert_eq!("666", &std::format!("{value_u32:?}"));
+        assert_eq!("abc", *value_abc);
+    }
+}
+
 #[macro_export]
 macro_rules! apply_tuple {
     ($macro:path, ($first:ident $(,$ids:ident)*)) => {
