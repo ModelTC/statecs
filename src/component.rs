@@ -5,7 +5,7 @@ pub trait ComponentGet<T, const I: usize> {
     where
         Self: 'a;
     fn get(&self) -> &T;
-    fn get_mut<'a>(&'a mut self) -> (&mut T, Self::AfterGetMut<'a>);
+    fn get_mut(&mut self) -> (&mut T, Self::AfterGetMut<'_>);
     fn take(self) -> (T, Self::AfterTake);
 }
 
@@ -125,7 +125,7 @@ macro_rules! impl_gets_puts {
             fn get(&self) -> &Self::Item {
                 &self.0
             }
-            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+            fn get_mut(&mut self) -> (&mut Self::Item, Self::AfterGetMut<'_>) {
                 (&mut self.0, ())
             }
             fn take(self) -> (Self::Item, Self::AfterTake) {
@@ -160,7 +160,7 @@ macro_rules! impl_gets_puts {
                 let ($($tps),*) = &self;
                 $item
             }
-            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+            fn get_mut(&mut self) -> (&mut Self::Item, Self::AfterGetMut<'_>) {
                 let ($($tps),*) = self;
                 ($item, ($first, $($suffixs),*))
             }
@@ -183,7 +183,7 @@ macro_rules! impl_gets_puts {
                 let ($($tps),*) = &self;
                 $item
             }
-            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+            fn get_mut(&mut self) -> (&mut Self::Item, Self::AfterGetMut<'_>) {
                 let ($($tps),*) = self;
                 ($item, ($($prefixs),*,))
             }
@@ -205,7 +205,7 @@ macro_rules! impl_gets_puts {
                 let ($($tps),*) = &self;
                 $item
             }
-            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+            fn get_mut(&mut self) -> (&mut Self::Item, Self::AfterGetMut<'_>) {
                 let ($($tps),*) = self;
                 ($item, ($($prefixs),*,$first,$($suffixs),*))
             }

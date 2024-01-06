@@ -96,10 +96,10 @@ fn expand_one_generic_for_inputs(
     generic_id: &Ident,
 ) -> Ident {
     let mut idx_counter = 0;
-    let iter_value_input = inputs.elems.iter().filter(|x| match x {
-        Type::Reference(_) => false,
-        _ => true,
-    });
+    let iter_value_input = inputs
+        .elems
+        .iter()
+        .filter(|x| !matches!(x, Type::Reference(_)));
     let after = None;
     let (take_bounds, after) = iter_value_input.rev().fold(
         (None, after),
@@ -137,7 +137,7 @@ fn expand_one_generic_for_inputs(
         .make_where_clause()
         .predicates
         .push(parse_quote!(#after_take_type_id: TupleMerge));
-    fn find_param_bounds<'a, 'b>(func: &'a mut ItemFn, k: &'b Ident) -> &'a mut syn::TypeParam {
+    fn find_param_bounds<'a>(func: &'a mut ItemFn, k: &Ident) -> &'a mut syn::TypeParam {
         match func
             .sig
             .generics
@@ -174,7 +174,7 @@ fn generic_one_for_macro(
     _outputs: &TypeTuple,
     after_take_type_id: &Ident,
 ) {
-    let after_take_id = Ident::new(&"_after_take", Span::mixed_site());
+    let after_take_id = Ident::new("_after_take", Span::mixed_site());
     let stmts = vec![];
     let mut input_operands: Vec<Option<Ident>> = vec![];
     input_operands.resize(inputs.elems.len(), None);
@@ -184,10 +184,7 @@ fn generic_one_for_macro(
         .elems
         .iter()
         .enumerate()
-        .filter(|(_idx, x)| match x {
-            Type::Reference(_) => false,
-            _ => true,
-        })
+        .filter(|(_idx, x)| !matches!(x, Type::Reference(_)))
         .fold(stmts, |mut stmts: Vec<syn::Stmt>, (idx, ty)| {
             let ident = Ident::new(&std::format!("_{}", idx), Span::mixed_site());
             input_operands[idx] = Some(ident.clone());
@@ -261,19 +258,16 @@ fn replace_outof_macro(func: &mut ItemFn, map: &HashMap<Ident, Type>) {
     impl<'a> syn::visit_mut::VisitMut for ModifyOutOf<'a> {
         fn visit_type_mut(&mut self, i: &mut Type) {
             syn::visit_mut::visit_type_mut(self, i);
-            match i {
-                Type::Macro(mc) => {
-                    let macro_ident = &mc.mac.path.segments.last().unwrap().ident;
-                    let tokens = &mc.mac.tokens;
-                    let id: Ident = parse_quote!(#tokens);
-                    if macro_ident == &"outof" {
-                        if let Some(tp) = self.map.get(&id) {
-                            self.modified = true;
-                            *i = tp.clone();
-                        }
+            if let Type::Macro(mc) = i {
+                let macro_ident = &mc.mac.path.segments.last().unwrap().ident;
+                let tokens = &mc.mac.tokens;
+                let id: Ident = parse_quote!(#tokens);
+                if macro_ident == "outof" {
+                    if let Some(tp) = self.map.get(&id) {
+                        self.modified = true;
+                        *i = tp.clone();
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -299,7 +293,7 @@ fn expand_transition_type_generics(
             Type::Reference(v) => Some(v),
             _ => None,
         });
-        fn find_param_bounds<'a, 'b>(func: &'a mut ItemFn, k: &'b Ident) -> &'a mut syn::TypeParam {
+        fn find_param_bounds<'a>(func: &'a mut ItemFn, k: &Ident) -> &'a mut syn::TypeParam {
             match func
                 .sig
                 .generics
@@ -315,7 +309,7 @@ fn expand_transition_type_generics(
                 _ => panic!(),
             }
         }
-        let after_take_type_id = &expand_one_generic_for_inputs(func, &inputs, k);
+        let after_take_type_id = &expand_one_generic_for_inputs(func, inputs, k);
         // bounds for get as ref
         let mut idx_counter = 0;
         let appends = iter_ref_input
@@ -338,7 +332,7 @@ fn expand_transition_type_generics(
             .extend(appends);
 
         // generate macro
-        generic_one_for_macro(func, k, &inputs, &outputs, after_take_type_id);
+        generic_one_for_macro(func, k, inputs, &outputs, after_take_type_id);
 
         outof_map.insert(
             k.clone(),
@@ -419,6 +413,5 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let append_attr = quote!(#input_generic_id: #input_types -> #output_type,);
     let mut attr = TokenStream::from(append_attr);
     attr.extend(_attr);
-    let res = system_wrap(attr, TokenStream::from(new_func));
-    res
+    system_wrap(attr, TokenStream::from(new_func))
 }
