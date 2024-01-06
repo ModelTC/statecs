@@ -1,174 +1,424 @@
 use core::panic;
+use std::collections::HashMap;
 
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, parse_quote, punctuated::Punctuated};
+use syn::{
+    fold::Fold, parse::Parse, parse_macro_input, parse_quote, punctuated::Punctuated,
+    spanned::Spanned, visit_mut::VisitMut, ExprTuple, Ident, ItemFn, Signature, Stmt, Token, Type,
+    TypeParamBound, TypeTuple,
+};
+
+struct TransofrmImplInput {
+    ids: Vec<syn::Ident>,
+    bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
+}
+impl syn::fold::Fold for TransofrmImplInput {
+    fn fold_type(&mut self, i: syn::Type) -> syn::Type {
+        let i = syn::fold::fold_type(self, i);
+        match i {
+            syn::Type::ImplTrait(impl_trait) => {
+                self.ids.push(syn::Ident::new(
+                    &std::format!("__ImplType_{}", self.ids.len()),
+                    Span::mixed_site(),
+                ));
+                self.bounds.push(impl_trait.bounds);
+                let tp = self.ids.last();
+                parse_quote!(#tp)
+            }
+            v => syn::fold::fold_type(self, v),
+        }
+    }
+}
+
+fn transoform_impl_fnarg_to_generics(mut sig: Signature) -> Signature {
+    let mut t = TransofrmImplInput {
+        ids: Default::default(),
+        bounds: Default::default(),
+    };
+    sig.inputs.iter_mut().for_each(|x| {
+        *x = t.fold_fn_arg(x.clone());
+    });
+    for (bounds, id) in t.bounds.iter().zip(t.ids) {
+        sig.generics
+            .params
+            .push(parse_quote!(#[allow(non_camel_case_types)] #id: #bounds));
+    }
+    sig
+}
+
+struct TypeTransition {
+    id: syn::Ident,
+    _colon: Token![:],
+    inputs: syn::TypeTuple,
+    _c: Option<Token![->]>,
+    outputs: Option<syn::TypeTuple>,
+}
+
+struct TypeTransitions(Punctuated<TypeTransition, Token![,]>);
+impl Parse for TypeTransitions {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self(Punctuated::parse_terminated(input)?))
+    }
+}
+
+impl Parse for TypeTransition {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let id = input.parse()?;
+        let _colon = input.parse()?;
+        let inputs = input.parse()?;
+        let (_c, outputs) = if input.peek(Token![->]) {
+            (Some(input.parse()?), Some(input.parse()?))
+        } else {
+            (None, None)
+        };
+        Ok(TypeTransition {
+            id,
+            _colon,
+            inputs,
+            _c,
+            outputs,
+        })
+    }
+}
+macro_rules! count {
+    ($p:literal, $counter:tt) => {{
+        let value = $counter;
+        $counter += 1;
+        &std::format!($p, value) as &str
+    }};
+}
+
+fn expand_one_generic_for_inputs(
+    func: &mut ItemFn,
+    inputs: &TypeTuple,
+    generic_id: &Ident,
+) -> Ident {
+    let mut idx_counter = 0;
+    let iter_value_input = inputs.elems.iter().filter(|x| match x {
+        Type::Reference(_) => false,
+        _ => true,
+    });
+    let after = None;
+    let (take_bounds, after) = iter_value_input.rev().fold(
+        (None, after),
+        |(item, after): (Option<Type>, Option<Ident>), tp| {
+            let after = after.or_else(|| {
+                let id = syn::Ident::new(
+                    &std::format!("__EXPAND_{generic_id}_TAKE_ID"),
+                    generic_id.span(),
+                );
+                func.sig
+                    .generics
+                    .params
+                    .push(parse_quote!(#[allow(non_camel_case_types)] #id));
+                parse_quote!(#id)
+            });
+            let item = item.unwrap_or_else(|| parse_quote!(#after));
+            let idx = syn::Ident::new(
+                count!("__EXPAND_{generic_id}_TAKE_IDX_{}", idx_counter),
+                Span::mixed_site(),
+            );
+            func.sig
+                .generics
+                .params
+                .push(parse_quote!(const #idx: usize));
+            (
+                Some(parse_quote!(impl ComponentGet<#tp, #idx, Item=#tp, AfterTake=#item>)),
+                after,
+            )
+        },
+    );
+    let take_bounds = take_bounds.unwrap_or_else(|| parse_quote!(TupleMerge));
+    let after_take_type_id = &after.unwrap_or(generic_id.clone());
+    func.sig
+        .generics
+        .make_where_clause()
+        .predicates
+        .push(parse_quote!(#after_take_type_id: TupleMerge));
+    fn find_param_bounds<'a, 'b>(func: &'a mut ItemFn, k: &'b Ident) -> &'a mut syn::TypeParam {
+        match func
+            .sig
+            .generics
+            .params
+            .iter_mut()
+            .find(|x| match x {
+                syn::GenericParam::Type(tp) => &tp.ident == k,
+                _ => false,
+            })
+            .unwrap()
+        {
+            syn::GenericParam::Type(tp) => tp,
+            _ => panic!(),
+        }
+    }
+    let k_bounds = &mut find_param_bounds(func, generic_id).bounds;
+
+    match take_bounds {
+        Type::ImplTrait(impl_trait) => {
+            let bounds = impl_trait.bounds;
+            k_bounds.extend(bounds);
+        }
+        v => {
+            k_bounds.push(parse_quote!(#v));
+        }
+    };
+    after_take_type_id.clone()
+}
+
+fn generic_one_for_macro(
+    func: &mut ItemFn,
+    generic_id: &Ident,
+    inputs: &TypeTuple,
+    _outputs: &TypeTuple,
+    after_take_type_id: &Ident,
+) {
+    let after_take_id = Ident::new(&"_after_take", Span::mixed_site());
+    let stmts = vec![];
+    let mut input_operands: Vec<Option<Ident>> = vec![];
+    input_operands.resize(inputs.elems.len(), None);
+
+    // takes
+    let stmts = inputs
+        .elems
+        .iter()
+        .enumerate()
+        .filter(|(_idx, x)| match x {
+            Type::Reference(_) => false,
+            _ => true,
+        })
+        .fold(stmts, |mut stmts: Vec<syn::Stmt>, (idx, ty)| {
+            let ident = Ident::new(&std::format!("_{}", idx), Span::mixed_site());
+            input_operands[idx] = Some(ident.clone());
+            match ty {
+                Type::Reference(_) => panic!(),
+                _ => {
+                    stmts
+                        .push(parse_quote!( let (#ident, #after_take_id) = #after_take_id.take();));
+                }
+            }
+            stmts
+        });
+    // refs
+    let (mut stmts, _) = inputs
+                .elems
+                .iter()
+                .enumerate()
+                .filter_map(|(_idx, x)| match x {
+                    Type::Reference(ty) => Some((_idx, ty.elem.to_owned())),
+                    _ => None,
+                })
+                .fold(
+                    (stmts, None),
+                    |(mut stmts, tmp): (Vec<syn::Stmt>, Option<syn::Expr>), (idx, _ty)| {
+                        let tmp = tmp.unwrap_or_else(|| {
+                            let ptr_ident: Ident = parse_quote!(after_take_ptr);
+                            stmts.push(parse_quote!(let mut #after_take_id = #after_take_id;));
+                            stmts.push(parse_quote!(let #ptr_ident = &mut #after_take_id as *mut #after_take_type_id;));
+                            parse_quote!(#ptr_ident)
+                        });
+                        let ident = Ident::new(&std::format!("_{}", idx), Span::mixed_site());
+                        input_operands[idx] = Some(ident.clone());
+                        stmts.push(parse_quote!( let #ident:&mut #_ty = unsafe {(*#tmp).get_mut().0 as &mut #_ty};));
+                        (stmts, Some(tmp))
+                    },
+                );
+    let input_operands =
+        input_operands
+            .iter()
+            .fold(parse_quote!(()), |mut input_operands: syn::ExprTuple, x| {
+                let x = x.as_ref().unwrap();
+                input_operands.elems.push(parse_quote!(#x));
+                input_operands
+            });
+    stmts.push(parse_quote!(let _res = _closure(#input_operands);));
+    stmts.push(Stmt::Expr(parse_quote!(#after_take_id.merge(_res)), None));
+    let mut block: syn::ExprBlock = parse_quote!({});
+    block.block.stmts.extend(stmts);
+    func.block.stmts.insert(
+        0,
+        parse_quote!(
+            #[allow(unused)]
+            macro_rules! #generic_id {
+                ($expr:expr => $($tts:tt)+) => {
+                    {
+                        let #after_take_id = $expr;
+                        let _closure = $($tts)+;
+                        #block
+                    }
+                };
+            }
+        ),
+    )
+}
+
+fn replace_outof_macro(func: &mut ItemFn, map: &HashMap<Ident, Type>) {
+    struct ModifyOutOf<'a> {
+        modified: bool,
+        map: &'a HashMap<Ident, Type>,
+    }
+    impl<'a> syn::visit_mut::VisitMut for ModifyOutOf<'a> {
+        fn visit_type_mut(&mut self, i: &mut Type) {
+            syn::visit_mut::visit_type_mut(self, i);
+            match i {
+                Type::Macro(mc) => {
+                    let macro_ident = &mc.mac.path.segments.last().unwrap().ident;
+                    let tokens = &mc.mac.tokens;
+                    let id: Ident = parse_quote!(#tokens);
+                    if macro_ident == &"outof" {
+                        if let Some(tp) = self.map.get(&id) {
+                            self.modified = true;
+                            *i = tp.clone();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut m = ModifyOutOf {
+        modified: true,
+        map,
+    };
+    // todo: check circle ref
+    while m.modified {
+        m.modified = false;
+        m.visit_item_fn_mut(func);
+    }
+}
+
+fn expand_transition_type_generics(
+    func: &mut ItemFn,
+    map: &HashMap<syn::Ident, (TypeTuple, Option<TypeTuple>)>,
+) {
+    let mut outof_map: HashMap<_, _> = Default::default();
+    for (k, (inputs, outputs)) in map {
+        let outputs = outputs.clone().unwrap_or_else(|| parse_quote!(()));
+        let iter_ref_input = inputs.elems.iter().filter_map(|x| match x {
+            Type::Reference(v) => Some(v),
+            _ => None,
+        });
+        fn find_param_bounds<'a, 'b>(func: &'a mut ItemFn, k: &'b Ident) -> &'a mut syn::TypeParam {
+            match func
+                .sig
+                .generics
+                .params
+                .iter_mut()
+                .find(|x| match x {
+                    syn::GenericParam::Type(tp) => &tp.ident == k,
+                    _ => false,
+                })
+                .unwrap()
+            {
+                syn::GenericParam::Type(tp) => tp,
+                _ => panic!(),
+            }
+        }
+        let after_take_type_id = &expand_one_generic_for_inputs(func, &inputs, k);
+        // bounds for get as ref
+        let mut idx_counter = 0;
+        let appends = iter_ref_input
+            .clone()
+            .map(|x| x.elem.as_ref())
+            .map(|tp| -> TypeParamBound {
+                let idx = &syn::Ident::new(
+                    count!("__EXPAND_{after_take_type_id}_REF_IDX_{}", idx_counter),
+                    Span::mixed_site(),
+                );
+                func.sig
+                    .generics
+                    .params
+                    .push(parse_quote!(const #idx: usize));
+                parse_quote!(ComponentGet<#tp, #idx>)
+            })
+            .collect::<Vec<TypeParamBound>>();
+        find_param_bounds(func, after_take_type_id)
+            .bounds
+            .extend(appends);
+
+        // generate macro
+        generic_one_for_macro(func, k, &inputs, &outputs, after_take_type_id);
+
+        outof_map.insert(
+            k.clone(),
+            parse_quote!(<#after_take_type_id as TupleMerge>::AfterMerge<(#outputs)>),
+        );
+    }
+    replace_outof_macro(func, &outof_map);
+}
+
+#[proc_macro_attribute]
+pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let type_transitions = parse_macro_input!(_attr as TypeTransitions).0;
+    let map = type_transitions
+        .into_iter()
+        .map(|x| (x.id, (x.inputs, x.outputs)))
+        .collect::<HashMap<_, _>>();
+    let mut func = parse_macro_input!(item as syn::ItemFn);
+    func.sig = transoform_impl_fnarg_to_generics(func.sig);
+
+    expand_transition_type_generics(&mut func, &map);
+    let _interface_name = func.sig.ident.clone();
+    let expanded = quote! {
+        #func
+    };
+    TokenStream::from(expanded)
+}
 
 #[proc_macro_attribute]
 pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut func = parse_macro_input!(item as syn::ItemFn);
-    let interface_ident = func.sig.ident.clone();
-    let func_ident = syn::Ident::new(
-        &std::format!("_{}_impl", interface_ident),
-        interface_ident.span(),
-    );
-    func.sig.ident = func_ident.clone();
+    let input_generic_id = Ident::new("_WRAPPER_ID", Span::mixed_site());
+    let mut input_tuple_type: TypeTuple = parse_quote!(());
+    func.sig = transoform_impl_fnarg_to_generics(func.sig);
+    input_tuple_type
+        .elems
+        .extend(func.sig.inputs.iter().filter_map(|x| match x {
+            syn::FnArg::Receiver(_) => None,
+            syn::FnArg::Typed(tp) => Some(tp.ty.as_ref().to_owned()),
+        }));
+    let input_types = input_tuple_type;
+    let mut sig = func.sig.clone();
+    sig.inputs.clear();
+    sig.inputs.push(parse_quote!(_value: #input_generic_id));
+    sig.output = parse_quote!(-> outof![#input_generic_id]);
+    let func_name = &func.sig.ident;
+    let generic_params = &sig.generics.params;
     let vis = func.vis.clone();
-
-    let func_args = &func.sig.inputs;
-    let mut func_arg_types = Punctuated::<syn::Type, syn::Token![,]>::new();
-    let func_ret_type = match &func.sig.output {
-        syn::ReturnType::Default => parse_quote!(()),
-        syn::ReturnType::Type(_, btp) => btp.as_ref().clone(),
-    };
-
-    let mut take_types = Punctuated::<syn::Type, syn::Token![,]>::new();
-    let take_pat: syn::Pat = parse_quote!(());
-    let mut take_pat = match take_pat {
-        syn::Pat::Tuple(tup) => tup,
-        _ => panic!(),
-    };
-
-    let mut take_index_idents = Punctuated::<syn::Ident, syn::Token![,]>::new();
-
-    let mut take_var_count = 0;
-    let mut take_index_generics = Punctuated::<syn::GenericParam, syn::Token![,]>::new();
-    let mut call_operands = Punctuated::<syn::Expr, syn::Token![,]>::new();
-
-    let mut put_index_idents = Punctuated::<syn::Ident, syn::Token![,]>::new();
-    let mut put_types = Punctuated::<syn::Type, syn::Token![,]>::new();
-    for tp in func_args {
-        match tp {
-            syn::FnArg::Typed(tp) => {
-                let tp = tp.ty.as_ref();
-                func_arg_types.push(tp.clone());
-                take_index_idents.push(syn::Ident::new(
-                    &std::format!("_TAKE_IDX_{}", take_index_idents.len()),
-                    Span::mixed_site(),
-                ));
-                let take_var_ident = syn::Ident::new(
-                    &std::format!("_TAKE_VAR_{}", take_var_count),
-                    Span::mixed_site(),
-                );
-                take_var_count += 1;
-                let id = take_index_idents.last();
-                take_index_generics.push(parse_quote!(const #id: usize));
-                match tp {
-                    syn::Type::Reference(tp) => {
-                        take_types.push(tp.elem.as_ref().clone());
-                        let id = take_var_ident;
-                        take_pat.elems.push(parse_quote!(mut #id));
-                        put_types.push(tp.elem.as_ref().clone());
-                        put_index_idents.push(id.clone());
-                        call_operands.push(parse_quote!(&mut #id));
-                    }
-                    tp => {
-                        take_types.push(parse_quote!(#tp));
-                        let id = take_var_ident;
-                        take_pat.elems.push(parse_quote!(mut #id));
-                        call_operands.push(parse_quote!(#id));
-                    }
-                }
-            }
-            _ => panic!(),
-        }
-    }
-    let mut res_var_idents = Punctuated::<syn::Ident, syn::Token![,]>::new();
-    match &func.sig.output {
-        syn::ReturnType::Default => {}
+    let where_clause = &sig.generics.where_clause;
+    let mut tup_operands: ExprTuple = parse_quote!(());
+    let (output_type, is_tuple): (TypeTuple, bool) = match &func.sig.output {
+        syn::ReturnType::Default => (parse_quote!(()), true),
         syn::ReturnType::Type(_, tp) => match tp.as_ref() {
-            syn::Type::Tuple(tup) => {
-                for elem in &tup.elems {
-                    put_types.push(elem.clone());
-                    put_index_idents.push(syn::Ident::new(
-                        &std::format!("_RES_VAR_{}", put_index_idents.len()),
-                        Span::mixed_site(),
-                    ));
-                    res_var_idents.push(put_index_idents.last().unwrap().clone());
-                }
-            }
-            elem => {
-                put_types.push(elem.clone());
-                put_index_idents.push(syn::Ident::new(
-                    &std::format!("_RES_VAR_{}", put_index_idents.len()),
-                    Span::mixed_site(),
-                ));
-                res_var_idents.push(put_index_idents.last().unwrap().clone());
-            }
+            Type::Tuple(tp) => (tp.clone(), true),
+            tp => (parse_quote!((#tp,)), false),
         },
-    }
-    let mut where_clause: syn::WhereClause = parse_quote! {
-        where _F: Fn(#func_arg_types)->(#func_ret_type),
     };
-
-    where_clause.predicates.clear();
-
-    let where_preds = &mut where_clause.predicates;
-    let mut tmp_type: syn::Type = parse_quote!(_T);
-    for (tp, idx) in take_types.iter().zip(take_index_idents.iter()) {
-        let _ref = &tmp_type;
-        where_preds.push(parse_quote! {
-            #_ref: ComponentGet<#tp, #idx, Item=#tp>
-        });
-        tmp_type = parse_quote! {
-            <#_ref as ComponentGet<#tp, #idx>>::AfterTake
-        };
+    for i in 0..func.sig.inputs.len() {
+        let nm = Ident::new(&std::format!("_{}", i), func.sig.inputs[i].span());
+        tup_operands.elems.push(parse_quote!(#nm));
     }
-    let mut res_expr: syn::Expr = parse_quote!(_rem);
-    for (tp, idx) in put_types.iter().zip(put_index_idents.iter()) {
-        let _ref = &tmp_type;
-        where_preds.push(parse_quote! {
-            #_ref: ComponentPut<#tp, Item = #tp>
-        });
-        tmp_type = parse_quote! {
-            <#_ref as ComponentPut<#tp>>::AfterPut
-        };
-        res_expr = parse_quote!(#res_expr.put(#idx));
-    }
-
-    let take_pat: syn::Pat = if take_pat.elems.len() != 1 {
-        parse_quote!(#take_pat)
+    let ret_stmt: Stmt = if is_tuple {
+        parse_quote!(return _res;)
     } else {
-        let elem = take_pat.elems.pop().unwrap();
-        parse_quote!(#elem)
+        parse_quote!(return (_res,);)
     };
-    let let_stmt: syn::Stmt = if !call_operands.is_empty() {
-        parse_quote! {
-            let (#take_pat, _rem) = take!((#take_types), data);
+    let operands = &tup_operands.elems;
+    let new_func = quote!(
+        #vis fn #func_name <#input_generic_id, #generic_params>(_args: #input_generic_id) -> outof![#input_generic_id] #where_clause {
+            #func
+            #input_generic_id!(
+                _args => | (#tup_operands) | {
+                    let _res = #func_name(#operands);
+                    #ret_stmt
+                }
+            )
         }
-    } else {
-        parse_quote! {
-            let _rem = data;
-        }
-    };
-
-    let asyncness = &func.sig.asyncness;
-
-    let func_gens = &func.sig.generics.params;
-    if let Some(preds) = func.sig.generics.where_clause.as_ref() {
-        for pred in preds.predicates.iter() {
-            where_preds.push(pred.clone());
-        }
-    }
-
-    let aw: Option<proc_macro2::TokenStream> = asyncness.map(|_| parse_quote!(.await));
-
-    let mut generics = take_index_generics;
-    generics.extend(func_gens.clone());
-
-    let expanded = quote! {
-
-        #func
-
-        #vis #asyncness fn #interface_ident<_T, #generics>(entity: _T) -> #tmp_type
-        #where_clause
-        {
-            let data = entity;
-            #let_stmt
-            let (#res_var_idents) = #func_ident(#call_operands)#aw;
-            #res_expr
-        }
-    };
-    TokenStream::from(expanded)
+    );
+    let append_attr = quote!(#input_generic_id: #input_types -> #output_type,);
+    let mut attr = TokenStream::from(append_attr);
+    attr.extend(_attr);
+    let res = system_wrap(attr, TokenStream::from(new_func));
+    res
 }

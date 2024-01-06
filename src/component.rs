@@ -1,7 +1,11 @@
 pub trait ComponentGet<T, const I: usize> {
     type Item;
     type AfterTake;
+    type AfterGetMut<'a>
+    where
+        Self: 'a;
     fn get(&self) -> &T;
+    fn get_mut<'a>(&'a mut self) -> (&mut T, Self::AfterGetMut<'a>);
     fn take(self) -> (T, Self::AfterTake);
 }
 
@@ -117,8 +121,12 @@ macro_rules! impl_gets_puts {
         impl<$first> ComponentGet<$first, 0> for ($first,) {
             type Item = $first;
             type AfterTake = ();
+            type AfterGetMut<'a> = () where Self: 'a;
             fn get(&self) -> &Self::Item {
                 &self.0
+            }
+            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+                (&mut self.0, ())
             }
             fn take(self) -> (Self::Item, Self::AfterTake) {
                 (self.0, ())
@@ -144,12 +152,17 @@ macro_rules! impl_gets_puts {
         #[allow(non_snake_case)]
         #[allow(unused_parens)]
         #[allow(unused_variables)]
-        impl<$($tps),*> ComponentGet<$item, {$idx}> for ($($tps),*) {
+        impl<$($tps),*> ComponentGet<$item, {$idx}> for ($($tps),*) /*where $($tps: 'static),* */{
             type Item = $item;
             type AfterTake = ($first, $($suffixs),*);
+            type AfterGetMut<'a> = (&'a mut $first, $(&'a mut $suffixs),*) where Self: 'a;
             fn get(&self) -> &Self::Item {
                 let ($($tps),*) = &self;
                 $item
+            }
+            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+                let ($($tps),*) = self;
+                ($item, ($first, $($suffixs),*))
             }
             fn take(self) -> (Self::Item, Self::AfterTake) {
                 let ($($tps),*) = self;
@@ -165,9 +178,14 @@ macro_rules! impl_gets_puts {
         impl<$($tps),*> ComponentGet<$item, {$idx}> for ($($tps),*) {
             type Item = $item;
             type AfterTake = ($($prefixs),*,);
+            type AfterGetMut<'a> = ($(&'a mut $prefixs),*,) where Self: 'a;
             fn get(&self) -> &Self::Item {
                 let ($($tps),*) = &self;
                 $item
+            }
+            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+                let ($($tps),*) = self;
+                ($item, ($($prefixs),*,))
             }
             fn take(self) -> (Self::Item, Self::AfterTake) {
                 let ($($tps),*) = self;
@@ -182,9 +200,14 @@ macro_rules! impl_gets_puts {
         impl<$($tps),*> ComponentGet<$item, {$idx}> for ($($tps),*) {
             type Item = $item;
             type AfterTake = ($($prefixs),*, $first, $($suffixs),*);
+            type AfterGetMut<'a> = ($(&'a mut $prefixs),*, &'a mut $first, $(&'a mut $suffixs),*) where Self: 'a;
             fn get(&self) -> &Self::Item {
                 let ($($tps),*) = &self;
                 $item
+            }
+            fn get_mut<'a>(&'a mut self) -> (&'a mut Self::Item, Self::AfterGetMut<'a>) {
+                let ($($tps),*) = self;
+                ($item, ($($prefixs),*,$first,$($suffixs),*))
             }
             fn take(self) -> (Self::Item, Self::AfterTake) {
                 let ($($tps),*) = self;
