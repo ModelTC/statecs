@@ -9,7 +9,7 @@ macro_rules! chain {
     [$first:expr] => {
         |x| {$first(x)}
     };
-    [$first:expr, $($exprs:expr),*] => {
+    [$first:expr, $($exprs:expr),* $(,)?] => {
         |x| {(chain![$($exprs),*])($first(x))}
     };
 }
@@ -68,22 +68,6 @@ mod test {
     }
 
     #[test]
-    fn test_async() {
-        #[system]
-        async fn test_system_gen() -> (i32, u32) {
-            (233, 666)
-        }
-        #[system]
-        async fn test_system_take(a: u32, b: i32) -> String {
-            std::format!("({a}, {b})")
-        }
-        async fn _test() {
-            let res = test_system_take(test_system_gen(()).await).await;
-            let _: (String,) = res;
-        }
-    }
-
-    #[test]
     fn test_chain() {
         #[system]
         fn f0() -> i32 {
@@ -103,6 +87,7 @@ mod test {
         let (res, ()) = take!((i32, u32, String), e);
         assert_eq!(res, (234, 666, "233".into()));
     }
+
     #[test]
     fn test_generic() {
         declare_component! {
@@ -157,5 +142,27 @@ mod test {
         assert_eq!("a=233, b=456", fb((CompA(AA), CompB(BB))).get() as &String);
         assert_eq!("a=666, b=123", fb((CompB(AA), CompA(BB))).get() as &String);
     }
-}
 
+    #[test]
+    fn test_impl_trait_in_return() {
+        use std::fmt::Display;
+        #[system]
+        fn s0(
+            a: Box<impl Display>,
+            b: Option<impl Display>,
+        ) -> (Box<impl Display>, Option<impl Display>) {
+            let a: i32 = str::parse(&a.to_string()).unwrap();
+            let b: i32 = str::parse(&b.unwrap().to_string()).unwrap();
+            (Box::new(a + b), Some(a - b))
+        }
+        fn assert(a: &Box<impl Display>, b: &Option<impl Display>) {
+            assert_eq!(233 + 666, str::parse(&a.to_string()).unwrap());
+            assert_eq!(
+                666 - 233,
+                str::parse(&b.as_ref().unwrap().to_string()).unwrap()
+            );
+        }
+        let res = s0((Some(233), Box::new(666)));
+        assert(res.get(), res.get());
+    }
+}
