@@ -229,8 +229,10 @@ fn generic_one_for_macro(
                 input_operands.elems.push(parse_quote!(#x));
                 input_operands
             });
-    stmts.push(parse_quote!(let _res = _closure(#input_operands);));
-    stmts.push(Stmt::Expr(parse_quote!(#after_take_id.merge(_res)), None));
+    stmts.push(Stmt::Expr(
+        parse_quote!({let _res = _closure(#input_operands); (#after_take_id, _res)}),
+        None,
+    ));
     let mut block: syn::ExprBlock = parse_quote!({});
     block.block.stmts.extend(stmts);
     func.block.stmts.insert(
@@ -238,11 +240,20 @@ fn generic_one_for_macro(
         parse_quote!(
             #[allow(unused)]
             macro_rules! #generic_id {
-                ($expr:expr => $($tts:tt)+) => {
+                ($expr:expr => $closure:expr) => {
                     {
                         let #after_take_id = $expr;
-                        let _closure = $($tts)+;
-                        #block
+                        let _closure = $closure;
+                        let (after_take, res) = #block;
+                        after_take.merge(res)
+                    }
+                };
+                ($expr:expr => $closure:expr, Option) => {
+                    {
+                        let #after_take_id = $expr;
+                        let _closure = $closure;
+                        let (after_take, res) = #block;
+                        res.and_then(|x| Some(after_take.merge(x)))
                     }
                 };
             }
