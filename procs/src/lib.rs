@@ -362,6 +362,7 @@ pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item_copy = item.clone();
     let mut func = parse_macro_input!(item as syn::ItemFn);
     let input_generic_id = Ident::new("_WRAPPER_ID", Span::mixed_site());
     let mut input_tuple_type: TypeTuple = parse_quote!(());
@@ -399,6 +400,8 @@ pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
         parse_quote!(return (_res,);)
     };
     let operands = &tup_operands.elems;
+    let item = system_wrap(_attr.clone(), item_copy);
+    let func = parse_macro_input!(item as syn::ItemFn);
     let new_func = quote!(
         #vis fn #func_name <#input_generic_id, #generic_params>(_args: #input_generic_id) -> outof![#input_generic_id] #where_clause {
             #func
