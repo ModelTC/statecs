@@ -258,6 +258,7 @@ fn generic_one_for_macro(
                         } else {
                             Err(after_take)
                         }
+
                     }
                 };
             }
