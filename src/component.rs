@@ -17,8 +17,8 @@ pub trait ComponentPut<T> {
 
 #[macro_export]
 macro_rules! declare_component {
-    {$($vis:vis $name:ident  (impl $($tts:tt)+);)*} => {
-        $($vis struct $name<_OBJ>(_OBJ) where _OBJ: $($tts)+;)*
+    {$($(#[$m:meta])? $vis:vis $name:ident  (impl $($tts:tt)+);)*} => {
+        $($(#[$m])? $vis struct $name<_OBJ>(pub _OBJ) where _OBJ: $($tts)+;)*
     };
 }
 
