@@ -253,7 +253,11 @@ fn generic_one_for_macro(
                         let #after_take_id = $expr;
                         let _closure = $closure;
                         let (after_take, res) = #block;
-                        res.and_then(|x| Some(after_take.merge(x)))
+                        if let Some(res) = res {
+                            Ok(after_take.merge(res))
+                        } else {
+                            Err(after_take)
+                        }
                     }
                 };
             }
