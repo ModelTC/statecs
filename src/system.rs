@@ -1,5 +1,6 @@
 extern crate procs;
 pub use procs::system;
+pub use procs::system_wrap;
 
 #[macro_export]
 macro_rules! chain {
