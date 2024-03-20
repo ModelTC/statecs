@@ -1,4 +1,4 @@
-pub trait TupleMerge {
+pub trait TupleMerge: Sized {
     type AfterMerge<U>
     where
         U: TupleExtend;

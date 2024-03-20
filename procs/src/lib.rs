@@ -6,7 +6,7 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{
     fold::Fold, parse::Parse, parse_macro_input, parse_quote, punctuated::Punctuated,
-    spanned::Spanned, visit_mut::VisitMut, ExprTuple, Ident, ItemFn, Signature, Stmt, Token, Type,
+    spanned::Spanned, visit_mut::VisitMut, Block, ExprTuple, Ident, Signature, Stmt, Token, Type,
     TypeParamBound, TypeTuple,
 };
 
@@ -91,7 +91,7 @@ macro_rules! count {
 }
 
 fn expand_one_generic_for_inputs(
-    func: &mut ItemFn,
+    sig: &mut Signature,
     inputs: &TypeTuple,
     generic_id: &Ident,
 ) -> Ident {
@@ -109,8 +109,7 @@ fn expand_one_generic_for_inputs(
                     &std::format!("__EXPAND_{generic_id}_TAKE_ID"),
                     generic_id.span(),
                 );
-                func.sig
-                    .generics
+                sig.generics
                     .params
                     .push(parse_quote!(#[allow(non_camel_case_types)] #id));
                 parse_quote!(#id)
@@ -120,10 +119,7 @@ fn expand_one_generic_for_inputs(
                 count!("__EXPAND_{generic_id}_TAKE_IDX_{}", idx_counter),
                 Span::mixed_site(),
             );
-            func.sig
-                .generics
-                .params
-                .push(parse_quote!(const #idx: usize));
+            sig.generics.params.push(parse_quote!(const #idx: usize));
             (
                 Some(parse_quote!(impl ComponentGet<#tp, #idx, Item=#tp, AfterTake=#item>)),
                 after,
@@ -132,14 +128,12 @@ fn expand_one_generic_for_inputs(
     );
     let take_bounds = take_bounds.unwrap_or_else(|| parse_quote!(TupleMerge));
     let after_take_type_id = &after.unwrap_or(generic_id.clone());
-    func.sig
-        .generics
+    sig.generics
         .make_where_clause()
         .predicates
         .push(parse_quote!(#after_take_type_id: TupleMerge));
-    fn find_param_bounds<'a>(func: &'a mut ItemFn, k: &Ident) -> &'a mut syn::TypeParam {
-        match func
-            .sig
+    fn find_param_bounds<'a>(sig: &'a mut Signature, k: &Ident) -> &'a mut syn::TypeParam {
+        match sig
             .generics
             .params
             .iter_mut()
@@ -153,7 +147,7 @@ fn expand_one_generic_for_inputs(
             _ => panic!(),
         }
     }
-    let k_bounds = &mut find_param_bounds(func, generic_id).bounds;
+    let k_bounds = &mut find_param_bounds(sig, generic_id).bounds;
 
     match take_bounds {
         Type::ImplTrait(impl_trait) => {
@@ -168,7 +162,7 @@ fn expand_one_generic_for_inputs(
 }
 
 fn generic_one_for_macro(
-    func: &mut ItemFn,
+    func_block: &mut Block,
     generic_id: &Ident,
     inputs: &TypeTuple,
     _outputs: &TypeTuple,
@@ -235,7 +229,7 @@ fn generic_one_for_macro(
     ));
     let mut block: syn::ExprBlock = parse_quote!({});
     block.block.stmts.extend(stmts);
-    func.block.stmts.insert(
+    func_block.stmts.insert(
         0,
         parse_quote!(
             #[allow(unused)]
@@ -248,7 +242,7 @@ fn generic_one_for_macro(
                         after_take.merge(res)
                     }
                 };
-                ($expr:expr => $closure:expr, Option) => {
+                ($expr:expr => $closure:expr => Option) => {
                     {
                         let #after_take_id = $expr;
                         let _closure = $closure;
@@ -261,12 +255,78 @@ fn generic_one_for_macro(
 
                     }
                 };
+                ($expr:expr => $closure:expr => NoMerge) => {
+                    {
+                        let #after_take_id = $expr;
+                        let _closure = $closure;
+                        let (after_take, res) = #block;
+                        (res, after_take)
+                    }
+                };
             }
         ),
     )
 }
 
-fn replace_outof_macro(func: &mut ItemFn, map: &HashMap<Ident, Type>) {
+fn expand_transition_type_generics(
+    sig: &mut Signature,
+    func_block: Option<&mut Block>,
+    map: &HashMap<syn::Ident, (TypeTuple, Option<TypeTuple>)>,
+) {
+    fn find_param_bounds<'a>(sig: &'a mut Signature, k: &Ident) -> &'a mut syn::TypeParam {
+        match sig
+            .generics
+            .params
+            .iter_mut()
+            .find(|x| match x {
+                syn::GenericParam::Type(tp) => &tp.ident == k,
+                _ => false,
+            })
+            .unwrap()
+        {
+            syn::GenericParam::Type(tp) => tp,
+            _ => panic!(),
+        }
+    }
+    let mut outof_map: HashMap<_, _> = Default::default();
+    for (k, (inputs, outputs)) in map {
+        let outputs = outputs.clone().unwrap_or_else(|| parse_quote!(()));
+        let iter_ref_input = inputs.elems.iter().filter_map(|x| match x {
+            Type::Reference(v) => Some(v),
+            _ => None,
+        });
+        let after_take_type_id = &expand_one_generic_for_inputs(sig, inputs, k);
+        // bounds for get as ref
+        let mut idx_counter = 0;
+        let appends = iter_ref_input
+            .clone()
+            .map(|x| x.elem.as_ref())
+            .map(|tp| -> TypeParamBound {
+                let idx = &syn::Ident::new(
+                    count!("__EXPAND_{after_take_type_id}_REF_IDX_{}", idx_counter),
+                    Span::mixed_site(),
+                );
+                sig.generics.params.push(parse_quote!(const #idx: usize));
+                parse_quote!(ComponentGet<#tp, #idx>)
+            })
+            .collect::<Vec<TypeParamBound>>();
+        find_param_bounds(sig, after_take_type_id)
+            .bounds
+            .extend(appends);
+
+        // generate macro
+        // func_block.
+        if let Some(&mut ref mut func_block) = func_block {
+            generic_one_for_macro(func_block, k, inputs, &outputs, after_take_type_id);
+        }
+
+        outof_map.insert(
+            k.clone(),
+            parse_quote!(<#after_take_type_id as TupleMerge>::AfterMerge<(#outputs)>),
+        );
+    }
+
+    // replace outof![X]
     struct ModifyOutOf<'a> {
         modified: bool,
         map: &'a HashMap<Ident, Type>,
@@ -289,73 +349,16 @@ fn replace_outof_macro(func: &mut ItemFn, map: &HashMap<Ident, Type>) {
     }
     let mut m = ModifyOutOf {
         modified: true,
-        map,
+        map: &mut outof_map,
     };
-    // todo: check circle ref
+
     while m.modified {
         m.modified = false;
-        m.visit_item_fn_mut(func);
-    }
-}
-
-fn expand_transition_type_generics(
-    func: &mut ItemFn,
-    map: &HashMap<syn::Ident, (TypeTuple, Option<TypeTuple>)>,
-) {
-    let mut outof_map: HashMap<_, _> = Default::default();
-    for (k, (inputs, outputs)) in map {
-        let outputs = outputs.clone().unwrap_or_else(|| parse_quote!(()));
-        let iter_ref_input = inputs.elems.iter().filter_map(|x| match x {
-            Type::Reference(v) => Some(v),
-            _ => None,
-        });
-        fn find_param_bounds<'a>(func: &'a mut ItemFn, k: &Ident) -> &'a mut syn::TypeParam {
-            match func
-                .sig
-                .generics
-                .params
-                .iter_mut()
-                .find(|x| match x {
-                    syn::GenericParam::Type(tp) => &tp.ident == k,
-                    _ => false,
-                })
-                .unwrap()
-            {
-                syn::GenericParam::Type(tp) => tp,
-                _ => panic!(),
-            }
+        m.visit_signature_mut(sig);
+        if let Some(&mut ref mut block) = func_block {
+            m.visit_block_mut(block);
         }
-        let after_take_type_id = &expand_one_generic_for_inputs(func, inputs, k);
-        // bounds for get as ref
-        let mut idx_counter = 0;
-        let appends = iter_ref_input
-            .clone()
-            .map(|x| x.elem.as_ref())
-            .map(|tp| -> TypeParamBound {
-                let idx = &syn::Ident::new(
-                    count!("__EXPAND_{after_take_type_id}_REF_IDX_{}", idx_counter),
-                    Span::mixed_site(),
-                );
-                func.sig
-                    .generics
-                    .params
-                    .push(parse_quote!(const #idx: usize));
-                parse_quote!(ComponentGet<#tp, #idx>)
-            })
-            .collect::<Vec<TypeParamBound>>();
-        find_param_bounds(func, after_take_type_id)
-            .bounds
-            .extend(appends);
-
-        // generate macro
-        generic_one_for_macro(func, k, inputs, &outputs, after_take_type_id);
-
-        outof_map.insert(
-            k.clone(),
-            parse_quote!(<#after_take_type_id as TupleMerge>::AfterMerge<(#outputs)>),
-        );
     }
-    replace_outof_macro(func, &outof_map);
 }
 
 #[proc_macro_attribute]
@@ -365,21 +368,45 @@ pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .into_iter()
         .map(|x| (x.id, (x.inputs, x.outputs)))
         .collect::<HashMap<_, _>>();
-    let mut func = parse_macro_input!(item as syn::ItemFn);
-    func.sig = transoform_impl_fnarg_to_generics(func.sig);
+    if let Some(mut func) = syn::parse::<syn::ItemFn>(item.clone()).ok() {
+        func.sig = transoform_impl_fnarg_to_generics(func.sig);
 
-    expand_transition_type_generics(&mut func, &map);
-    let _interface_name = func.sig.ident.clone();
-    let expanded = quote! {
-        #func
-    };
-    TokenStream::from(expanded)
+        expand_transition_type_generics(&mut func.sig, Some(&mut func.block), &map);
+        let _interface_name = func.sig.ident.clone();
+        let expanded = quote! {
+            #func
+        };
+        TokenStream::from(expanded)
+    } else if let Some(trait_item) = syn::parse::<syn::TraitItem>(item.clone()).ok() {
+        let mut func = match trait_item {
+            syn::TraitItem::Fn(func) => func,
+            _ => panic!("Not supported trait item"),
+        };
+        func.sig = transoform_impl_fnarg_to_generics(func.sig);
+        expand_transition_type_generics(&mut func.sig, func.default.as_mut(), &map);
+        TokenStream::from(quote! {#func})
+    } else if let Some(impl_item) = syn::parse::<syn::ImplItem>(item.clone()).ok() {
+        let mut func = match impl_item {
+            syn::ImplItem::Fn(func) => func,
+            _ => panic!("Not supported trait item"),
+        };
+        func.sig = transoform_impl_fnarg_to_generics(func.sig);
+        expand_transition_type_generics(&mut func.sig, Some(&mut func.block), &map);
+        TokenStream::from(quote! {#func})
+    } else {
+        panic!("cannot process");
+    }
 }
 
 #[proc_macro_attribute]
 pub fn system(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_copy = item.clone();
-    let mut func = parse_macro_input!(item as syn::ItemFn);
+    let mut func = match syn::parse::<syn::ItemFn>(item) {
+        Ok(data) => data,
+        Err(err) => {
+            return TokenStream::from(err.to_compile_error());
+        }
+    };
     let input_generic_id = Ident::new("_WRAPPER_ID", Span::mixed_site());
     let mut input_tuple_type: TypeTuple = parse_quote!(());
     func.sig = transoform_impl_fnarg_to_generics(func.sig);
