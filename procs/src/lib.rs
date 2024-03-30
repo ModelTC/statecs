@@ -368,7 +368,7 @@ pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .into_iter()
         .map(|x| (x.id, (x.inputs, x.outputs)))
         .collect::<HashMap<_, _>>();
-    if let Some(mut func) = syn::parse::<syn::ItemFn>(item.clone()).ok() {
+    if let Ok(mut func) = syn::parse::<syn::ItemFn>(item.clone()) {
         func.sig = transoform_impl_fnarg_to_generics(func.sig);
 
         expand_transition_type_generics(&mut func.sig, Some(&mut func.block), &map);
@@ -377,7 +377,7 @@ pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #func
         };
         TokenStream::from(expanded)
-    } else if let Some(trait_item) = syn::parse::<syn::TraitItem>(item.clone()).ok() {
+    } else if let Ok(trait_item) = syn::parse::<syn::TraitItem>(item.clone()) {
         let mut func = match trait_item {
             syn::TraitItem::Fn(func) => func,
             _ => panic!("Not supported trait item"),
@@ -385,7 +385,7 @@ pub fn system_wrap(_attr: TokenStream, item: TokenStream) -> TokenStream {
         func.sig = transoform_impl_fnarg_to_generics(func.sig);
         expand_transition_type_generics(&mut func.sig, func.default.as_mut(), &map);
         TokenStream::from(quote! {#func})
-    } else if let Some(impl_item) = syn::parse::<syn::ImplItem>(item.clone()).ok() {
+    } else if let Ok(impl_item) = syn::parse::<syn::ImplItem>(item.clone()) {
         let mut func = match impl_item {
             syn::ImplItem::Fn(func) => func,
             _ => panic!("Not supported trait item"),
