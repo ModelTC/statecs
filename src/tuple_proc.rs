@@ -1,6 +1,7 @@
 use crate::apply_tuple;
 use crate::ComponentGet;
 use crate::TupleMerge;
+use futures::future::FutureExt;
 use std::{future::Future, marker::PhantomData};
 
 use procs::system_wrap;
@@ -67,6 +68,20 @@ macro_rules! cascade_async {
 macro_rules! cascade_async_fn {
     ($expr:expr) => {
         |x| cascade_async!(x => $expr)
+    };
+}
+
+#[macro_export]
+macro_rules! cascade_obj_async {
+    (($obj:expr, $val:expr) => $expr:expr) => {
+        $expr.into_tuple_processor().cascade_obj_fut($obj, $val)
+    };
+}
+
+#[macro_export]
+macro_rules! cascade_obj_async_fn {
+    ($expr:expr) => {
+        move |obj, x| cascade_obj_async!((obj, x) => $expr)
     };
 }
 
@@ -183,7 +198,7 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<F, OType, $($ids,)*> IntoTupleProcessor<($($ids,)*), OType> for F
         where
-            F: Fn($($ids,)*) -> OType,
+            F: FnOnce($($ids,)*) -> OType,
         {
             type IType = ($($ids,)*);
 
@@ -197,20 +212,20 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<_F, OType, $($ids,)*> TupleProcessFn<_F, (($($ids,)*), OType)>
         where
-            _F: Fn($($ids,)*) -> OType,
+            _F: FnOnce($($ids,)*) -> OType,
             OType: TupleExtend,
         {
             #[system_wrap(
                 _E: ($($ids,)*)
             )]
-            pub fn operate<_E>(&self, e: _E) -> (OType, outof![_E]) {
+            pub fn operate<_E>(self, e: _E) -> (OType, outof![_E]) {
                 let (r, b) = _E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
                 (r, b.merge(()))
             }
             #[system_wrap(
                 _E: ($($ids,)*)
             )]
-            pub fn cascade<_E>(&self, e: _E) -> <outof![_E] as TupleMerge>::AfterMerge<OType>
+            pub fn cascade<_E>(self, e: _E) -> <outof![_E] as TupleMerge>::AfterMerge<OType>
             where
                 outof![_E]: TupleMerge,
             {
@@ -221,12 +236,12 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<F, OType, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Option<OType>)>
         where
-            F: Fn($($ids,)*) -> Option<OType>,
+            F: FnOnce($($ids,)*) -> Option<OType>,
         {
             #[system_wrap(
                 E: ($($ids,)*)
             )]
-            pub fn cascade_option<E>(&self, e: E) -> Option<<outof![E] as TupleMerge>::AfterMerge<OType>>
+            pub fn cascade_option<E>(self, e: E) -> Option<<outof![E] as TupleMerge>::AfterMerge<OType>>
             where
                 outof![E]: TupleMerge,
                 OType: TupleExtend,
@@ -238,13 +253,13 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<F, ErrType, OType, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Result<OType, ErrType>)>
         where
-            F: Fn($($ids,)*) -> Result<OType, ErrType>,
+            F: FnOnce($($ids,)*) -> Result<OType, ErrType>,
         {
             #[system_wrap(
                 E: ($($ids,)*)
             )]
             pub fn cascade_result<E>(
-                &self,
+                self,
                 e: E,
             ) -> Result<<outof![E] as TupleMerge>::AfterMerge<OType>, ErrType>
             where
@@ -258,7 +273,7 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<F, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
         where
-            F: Fn($($ids,)*) -> Fut,
+            F: FnOnce($($ids,)*) -> Fut,
             Fut: Future<Output = OType>,
             OType: TupleExtend,
         {
@@ -283,28 +298,29 @@ macro_rules! impl_tuple_proc {
         #[allow(non_snake_case)]
         impl<F, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
         where
-            F: Fn($($ids,)*) -> Fut,
+            F: FnOnce($($ids,)*) -> Fut,
             Fut: Future<Output = Option<OType>>,
         {
             #[system_wrap(
                 E: ($($ids,)*)
             )]
-            pub async fn cascade_option_fut<E>(
+            pub fn cascade_option_fut<E>(
                 self,
                 e: E,
-            ) -> Option<<outof![E] as TupleMerge>::AfterMerge<OType>>
+            ) -> impl Future<Output=Option<<outof![E] as TupleMerge>::AfterMerge<OType>>>
             where
                 outof![E]: TupleMerge,
                 OType: TupleExtend,
             {
                 let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                r.await.map(|r| b.merge(()).merge(r))
+                // r.await.map(|r| b.merge(()).merge(r))
+                r.map(|x| x.map(|r| b.merge(()).merge(r)))
             }
         }
         #[allow(non_snake_case)]
         impl<F, ErrType, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
         where
-            F: Fn($($ids,)*) -> Fut,
+            F: FnOnce($($ids,)*) -> Fut,
             Fut: Future<Output = Result<OType, ErrType>>,
         {
             #[system_wrap(
@@ -320,6 +336,29 @@ macro_rules! impl_tuple_proc {
             {
                 let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
                 r.await.map(|r| b.merge(()).merge(r))
+            }
+        }
+        #[allow(non_snake_case)]
+        impl<Obj, F, OType, Fut, $($ids,)*> TupleProcessFn<F, ((Obj, ($($ids,)*)), Fut)>
+        where
+            F: FnOnce(Obj, ($($ids,)*)) -> Fut,
+            Fut: Future<Output = (Obj, Option<OType>)>,
+        {
+            #[system_wrap(
+                E: ($($ids,)*)
+            )]
+            pub async fn cascade_obj_fut<E>(
+                self,
+                obj: Obj,
+                e: E,
+            ) -> (Obj, Option<<outof![E] as TupleMerge>::AfterMerge<OType>>)
+            where
+                outof![E]: TupleMerge,
+                OType: TupleExtend,
+            {
+                let (r, b) = E!(e => |($($ids,)*)| self.0(obj, ($($ids,)*)) => NoMerge);
+                let (obj, r) = r.await;
+                (obj, r.map(|r| b.merge(()).merge(r)))
             }
         }
         };

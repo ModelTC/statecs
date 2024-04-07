@@ -224,7 +224,7 @@ fn generic_one_for_macro(
                 input_operands
             });
     stmts.push(Stmt::Expr(
-        parse_quote!({let _res = _closure(#input_operands); (#after_take_id, _res)}),
+        parse_quote!({let mut _res = _closure(#input_operands); (#after_take_id, _res)}),
         None,
     ));
     let mut block: syn::ExprBlock = parse_quote!({});
@@ -237,7 +237,7 @@ fn generic_one_for_macro(
                 ($expr:expr => $closure:expr) => {
                     {
                         let #after_take_id = $expr;
-                        let _closure = $closure;
+                        let mut _closure = $closure;
                         let (after_take, res) = #block;
                         after_take.merge(res)
                     }
@@ -245,7 +245,7 @@ fn generic_one_for_macro(
                 ($expr:expr => $closure:expr => Option) => {
                     {
                         let #after_take_id = $expr;
-                        let _closure = $closure;
+                        let mut _closure = $closure;
                         let (after_take, res) = #block;
                         if let Some(res) = res {
                             Ok(after_take.merge(res))
@@ -258,7 +258,7 @@ fn generic_one_for_macro(
                 ($expr:expr => $closure:expr => NoMerge) => {
                     {
                         let #after_take_id = $expr;
-                        let _closure = $closure;
+                        let mut _closure = $closure;
                         let (after_take, res) = #block;
                         (res, after_take)
                     }
