@@ -39,7 +39,7 @@ macro_rules! cascade_option {
 #[macro_export]
 macro_rules! cascade_option_fn {
     ($expr:expr) => {
-        |x| cascade_option!(x => $expr)
+        move |x| cascade_option!(x => $expr)
     };
 }
 
@@ -53,7 +53,7 @@ macro_rules! cascade_result {
 #[macro_export]
 macro_rules! cascade_result_fn {
     ($expr:expr) => {
-        |x| cascade_result!(x => $expr)
+        move |x| cascade_result!(x => $expr)
     };
 }
 
@@ -67,7 +67,7 @@ macro_rules! cascade_async {
 #[macro_export]
 macro_rules! cascade_async_fn {
     ($expr:expr) => {
-        |x| cascade_async!(x => $expr)
+        move |x| cascade_async!(x => $expr)
     };
 }
 
@@ -95,7 +95,7 @@ macro_rules! cascade_option_async {
 #[macro_export]
 macro_rules! cascade_option_async_fn {
     ($expr:expr) => {
-        |x| cascade_option_async!(x => $expr)
+        move |x| cascade_option_async!(x => $expr)
     };
 }
 
@@ -109,7 +109,7 @@ macro_rules! cascade_result_async {
 #[macro_export]
 macro_rules! cascade_result_async_fn {
     ($expr:expr) => {
-        |x| cascade_result_async!(x => $expr)
+        move |x| cascade_result_async!(x => $expr)
     };
 }
 
