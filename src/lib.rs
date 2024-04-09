@@ -13,7 +13,6 @@ pub mod prelude {
     pub use crate::take;
 
     pub use crate::tuple_proc::{IntoTupleProcessor, TupleProcessFn};
-    pub use crate::{cascade, cascade_option};
 }
 
 pub use prelude::*;
