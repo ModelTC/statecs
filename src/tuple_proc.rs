@@ -1,14 +1,13 @@
 use crate::apply_tuple;
 use crate::ComponentGet;
 use crate::TupleMerge;
-use futures::future::FutureExt;
 use std::{future::Future, marker::PhantomData};
 
 use procs::system_wrap;
 
 use crate::TupleExtend;
 
-pub trait IntoTupleProcessor<IType, OType> {
+pub trait IntoTupleProcessor<IType, OType, _M> {
     type IType;
     type OType;
     type TupleProcessorType;
@@ -24,92 +23,28 @@ macro_rules! cascade {
 
 #[macro_export]
 macro_rules! cascade_fn {
-    ($expr:expr) => {
+    (ref $expr:expr) => {
         |x| cascade!(x => $expr)
     };
-}
-
-#[macro_export]
-macro_rules! cascade_option {
-    ($val:expr => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_option($val)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_option_fn {
     ($expr:expr) => {
-        move |x| cascade_option!(x => $expr)
+        move |x| cascade!(x => $expr)
     };
 }
 
 #[macro_export]
-macro_rules! cascade_result {
-    ($val:expr => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_result($val)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_result_fn {
-    ($expr:expr) => {
-        move |x| cascade_result!(x => $expr)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_async {
-    ($val:expr => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_fut($val)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_async_fn {
-    ($expr:expr) => {
-        move |x| cascade_async!(x => $expr)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_obj_async {
+macro_rules! cascade_obj {
     (($obj:expr, $val:expr) => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_obj_fut($obj, $val)
+        $expr.into_tuple_processor().cascade_obj($obj, $val)
     };
 }
 
 #[macro_export]
-macro_rules! cascade_obj_async_fn {
+macro_rules! cascade_obj_fn {
+    (ref $expr:expr) => {
+        |obj, x| cascade_obj!((obj, x) => $expr)
+    };
     ($expr:expr) => {
-        move |obj, x| cascade_obj_async!((obj, x) => $expr)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_option_async {
-    ($val:expr => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_option_fut($val)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_option_async_fn {
-    ($expr:expr) => {
-        move |x| cascade_option_async!(x => $expr)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_result_async {
-    ($val:expr => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_result_fut($val)
-    };
-}
-
-#[macro_export]
-macro_rules! cascade_result_async_fn {
-    ($expr:expr) => {
-        move |x| cascade_result_async!(x => $expr)
+        move |obj, x| cascade_obj!((obj, x) => $expr)
     };
 }
 
@@ -134,7 +69,7 @@ mod tests {
         }
         assert_eq!(
             Some((1u32, 0i8, 2i16)),
-            cascade_option!((0i8, 1i32, 2i16) => test_option)
+            cascade!((0i8, 1i32, 2i16) => test_option)
         );
         // result
         fn test_result(a: i32, b: u32) -> Result<(i32,), u32> {
@@ -146,11 +81,11 @@ mod tests {
         }
         assert_eq!(
             Err(666u32),
-            cascade_result!((666u32, 233i32, "string".to_string()) => test_result)
+            cascade!((666u32, 233i32, "string".to_string()) => test_result)
         );
         assert_eq!(
             Ok((666i32, "string".to_string())),
-            cascade_result!((233u32, 666i32, "string".to_string()) => test_result)
+            cascade!((233u32, 666i32, "string".to_string()) => test_result)
         );
     }
     #[test]
@@ -159,7 +94,7 @@ mod tests {
         async fn test_cascade(a: i32) -> (i32,) {
             (a + 1,)
         }
-        assert_eq!((234i32,), cascade_async!((233i32,) => test_cascade).await);
+        assert_eq!((234i32,), cascade!((233i32,) => test_cascade).await);
         // option
         async fn test_option(a: i32) -> Option<(u32,)> {
             if a > 0 {
@@ -170,7 +105,7 @@ mod tests {
         }
         assert_eq!(
             Some((1u32, 0i8, 2i16)),
-            cascade_option_async!((0i8, 1i32, 2i16) => test_option).await
+            cascade!((0i8, 1i32, 2i16) => test_option).await
         );
         // result
         async fn test_result(a: i32, b: u32) -> Result<(i32,), u32> {
@@ -182,21 +117,141 @@ mod tests {
         }
         assert_eq!(
             Err(666u32),
-            cascade_result_async!((666u32, 233i32, "string".to_string()) => test_result).await
+            cascade!((666u32, 233i32, "string".to_string()) => test_result).await
         );
         assert_eq!(
             Ok((666i32, "string".to_string())),
-            cascade_result_async!((233u32, 666i32, "string".to_string()) => test_result).await
+            cascade!((233u32, 666i32, "string".to_string()) => test_result).await
         );
     }
 }
 
 pub struct TupleProcessFn<F, M>(F, PhantomData<M>);
 
+pub trait CascadeInto<const I: usize, const J: usize> {
+    type Output<U>
+    where
+        U: TupleMerge;
+    fn cascade_merge<U>(self, u: U) -> Self::Output<U>
+    where
+        U: TupleMerge;
+}
+
+impl<T> CascadeInto<0, 0> for T
+where
+    T: TupleExtend,
+{
+    type Output<U> = <U as TupleMerge>::AfterMerge<T> where U: TupleMerge;
+    fn cascade_merge<U>(self, u: U) -> Self::Output<U>
+    where
+        U: TupleMerge,
+    {
+        u.merge(self)
+    }
+}
+
+impl<T> CascadeInto<0, 1> for Option<T>
+where
+    T: TupleExtend,
+{
+    type Output<U> = Option<<U as TupleMerge>::AfterMerge<T>> where U: TupleMerge;
+    fn cascade_merge<U>(self, u: U) -> Self::Output<U>
+    where
+        U: TupleMerge,
+    {
+        self.map(|s| u.merge(s))
+    }
+}
+
+impl<T, E> CascadeInto<0, 2> for Result<T, E>
+where
+    T: TupleExtend,
+{
+    type Output<U> = Result<<U as TupleMerge>::AfterMerge<T>, E> where U: TupleMerge;
+    fn cascade_merge<U>(self, u: U) -> Self::Output<U>
+    where
+        U: TupleMerge,
+    {
+        self.map(|s| u.merge(s))
+    }
+}
+#[pin_project::pin_project]
+pub struct CascadeFut<Fut, U, const I: usize> {
+    #[pin]
+    fut: Fut,
+    u: Option<U>,
+}
+
+impl<Fut, U> Future for CascadeFut<Fut, U, 0>
+where
+    Fut: Future,
+    Fut::Output: TupleExtend,
+    U: TupleMerge,
+{
+    type Output = <U as TupleMerge>::AfterMerge<Fut::Output>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        let r: Fut::Output = futures::ready!(this.fut.poll(cx));
+        std::task::Poll::Ready(this.u.take().unwrap().merge(r))
+    }
+}
+impl<Fut, U, Res> Future for CascadeFut<Fut, U, 1>
+where
+    Fut: Future<Output = Option<Res>>,
+    Res: TupleExtend,
+    U: TupleMerge,
+{
+    type Output = Option<<U as TupleMerge>::AfterMerge<Res>>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        let r: Fut::Output = futures::ready!(this.fut.poll(cx));
+        std::task::Poll::Ready(r.map(|r| this.u.take().unwrap().merge(r)))
+    }
+}
+impl<Fut, U, Res, E> Future for CascadeFut<Fut, U, 2>
+where
+    Fut: Future<Output = Result<Res, E>>,
+    Res: TupleExtend,
+    U: TupleMerge,
+{
+    type Output = Result<<U as TupleMerge>::AfterMerge<Res>, E>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        let r: Fut::Output = futures::ready!(this.fut.poll(cx));
+        std::task::Poll::Ready(r.map(|r| this.u.take().unwrap().merge(r)))
+    }
+}
+
+impl<F, T, const J: usize> CascadeInto<3, J> for F
+where
+    F: Future<Output = T>,
+    T: CascadeInto<0, J>,
+{
+    type Output<U> = CascadeFut<F, U, J> where U: TupleMerge;
+    fn cascade_merge<U>(self, u: U) -> Self::Output<U>
+    where
+        U: TupleMerge,
+    {
+        CascadeFut {
+            fut: self,
+            u: Some(u),
+        }
+    }
+}
+
 macro_rules! impl_tuple_proc {
     (($($ids:ident),*$(,)?)) => {
         #[allow(non_snake_case)]
-        impl<F, OType, $($ids,)*> IntoTupleProcessor<($($ids,)*), OType> for F
+        impl<F, OType, $($ids,)*> IntoTupleProcessor<($($ids,)*), OType, OType> for F
         where
             F: FnOnce($($ids,)*) -> OType,
         {
@@ -213,7 +268,6 @@ macro_rules! impl_tuple_proc {
         impl<_F, OType, $($ids,)*> TupleProcessFn<_F, (($($ids,)*), OType)>
         where
             _F: FnOnce($($ids,)*) -> OType,
-            OType: TupleExtend,
         {
             #[system_wrap(
                 _E: ($($ids,)*)
@@ -225,140 +279,36 @@ macro_rules! impl_tuple_proc {
             #[system_wrap(
                 _E: ($($ids,)*)
             )]
-            pub fn cascade<_E>(self, e: _E) -> <outof![_E] as TupleMerge>::AfterMerge<OType>
+            pub fn cascade<_E, const I: usize, const J: usize>(self, e: _E) ->
+            <OType as CascadeInto<I, J>>::Output<outof![_E]>
             where
                 outof![_E]: TupleMerge,
+                OType: CascadeInto<I, J>,
             {
                 let (r, b) = _E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                b.merge(()).merge(r)
+                r.cascade_merge(b.merge(()))
             }
         }
         #[allow(non_snake_case)]
-        impl<F, OType, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Option<OType>)>
+        impl<Obj, F, OType, $($ids,)*> TupleProcessFn<F, ((Obj, ($($ids,)*)), OType)>
         where
-            F: FnOnce($($ids,)*) -> Option<OType>,
+            F: FnOnce(Obj, ($($ids,)*)) -> OType,
         {
             #[system_wrap(
                 E: ($($ids,)*)
             )]
-            pub fn cascade_option<E>(self, e: E) -> Option<<outof![E] as TupleMerge>::AfterMerge<OType>>
-            where
-                outof![E]: TupleMerge,
-                OType: TupleExtend,
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                r.map(|r| b.merge(()).merge(r))
-            }
-        }
-        #[allow(non_snake_case)]
-        impl<F, ErrType, OType, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Result<OType, ErrType>)>
-        where
-            F: FnOnce($($ids,)*) -> Result<OType, ErrType>,
-        {
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub fn cascade_result<E>(
-                self,
-                e: E,
-            ) -> Result<<outof![E] as TupleMerge>::AfterMerge<OType>, ErrType>
-            where
-                outof![E]: TupleMerge,
-                OType: TupleExtend,
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                r.map(|r| b.merge(()).merge(r))
-            }
-        }
-        #[allow(non_snake_case)]
-        impl<F, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
-        where
-            F: FnOnce($($ids,)*) -> Fut,
-            Fut: Future<Output = OType>,
-            OType: TupleExtend,
-        {
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub async fn operate_fut<E>(self, e: E) -> (OType, outof![E]) {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                (r.await, b.merge(()))
-            }
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub async fn cascade_fut<E>(self, e: E) -> <outof![E] as TupleMerge>::AfterMerge<OType>
-            where
-                outof![E]: TupleMerge,
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                b.merge(()).merge(r.await)
-            }
-        }
-        #[allow(non_snake_case)]
-        impl<F, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
-        where
-            F: FnOnce($($ids,)*) -> Fut,
-            Fut: Future<Output = Option<OType>>,
-        {
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub fn cascade_option_fut<E>(
-                self,
-                e: E,
-            ) -> impl Future<Output=Option<<outof![E] as TupleMerge>::AfterMerge<OType>>>
-            where
-                outof![E]: TupleMerge,
-                OType: TupleExtend,
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                // r.await.map(|r| b.merge(()).merge(r))
-                r.map(|x| x.map(|r| b.merge(()).merge(r)))
-            }
-        }
-        #[allow(non_snake_case)]
-        impl<F, ErrType, OType, Fut, $($ids,)*> TupleProcessFn<F, (($($ids,)*), Fut)>
-        where
-            F: FnOnce($($ids,)*) -> Fut,
-            Fut: Future<Output = Result<OType, ErrType>>,
-        {
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub async fn cascade_result_fut<E>(
-                self,
-                e: E,
-            ) -> Result<<outof![E] as TupleMerge>::AfterMerge<OType>, ErrType>
-            where
-                outof![E]: TupleMerge,
-                OType: TupleExtend,
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
-                r.await.map(|r| b.merge(()).merge(r))
-            }
-        }
-        #[allow(non_snake_case)]
-        impl<Obj, F, OType, Fut, $($ids,)*> TupleProcessFn<F, ((Obj, ($($ids,)*)), Fut)>
-        where
-            F: FnOnce(Obj, ($($ids,)*)) -> Fut,
-            Fut: Future<Output = (Obj, Option<OType>)>,
-        {
-            #[system_wrap(
-                E: ($($ids,)*)
-            )]
-            pub async fn cascade_obj_fut<E>(
+            pub fn cascade_obj<E, const I: usize, const J: usize>(
                 self,
                 obj: Obj,
                 e: E,
-            ) -> (Obj, Option<<outof![E] as TupleMerge>::AfterMerge<OType>>)
+            )
+            -> <OType as CascadeInto<I, J>>::Output<outof![E]>
             where
                 outof![E]: TupleMerge,
-                OType: TupleExtend,
+                OType: CascadeInto<I, J>
             {
                 let (r, b) = E!(e => |($($ids,)*)| self.0(obj, ($($ids,)*)) => NoMerge);
-                let (obj, r) = r.await;
-                (obj, r.map(|r| b.merge(()).merge(r)))
+                r.cascade_merge(b.merge(()))
             }
         }
         };
