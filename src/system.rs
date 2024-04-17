@@ -11,7 +11,7 @@ macro_rules! chain {
         |x| {$first(x)}
     };
     [$first:expr, $($exprs:expr),* $(,)?] => {
-        |x| {(chain![$($exprs),*])($first(x))}
+        |x| { let x = $first(x); $(let x = $exprs(x);)* x}
     };
 }
 

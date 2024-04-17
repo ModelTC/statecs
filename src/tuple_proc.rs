@@ -16,18 +16,25 @@ pub trait IntoTupleProcessor<IType, OType, _M> {
 
 #[macro_export]
 macro_rules! cascade {
-    ($val:expr => $expr:expr) => {
+    ($val:expr => $expr:expr) => {{
+        use $crate::IntoTupleProcessor;
         $expr.into_tuple_processor().cascade($val)
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! cascade_fn {
-    (ref $expr:expr) => {
-        |x| cascade!(x => $expr)
+    (once $expr:expr) => {
+        {
+            let __e = $expr;
+            move |x| { $crate::cascade!(x => __e) }
+        }
     };
     ($expr:expr) => {
-        move |x| cascade!(x => $expr)
+        {
+            let mut __e = $expr;
+            move |x| { $crate::cascade!(x => &mut __e) }
+        }
     };
 }
 
