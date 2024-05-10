@@ -5,7 +5,7 @@ pub(crate) mod tuple_proc;
 
 pub mod prelude {
     pub use crate::component::{ComponentGet, ComponentPut};
-    pub use crate::entity::{TupleExtend, TupleMerge};
+    pub use crate::entity::{TupleExtend, TupleMerge, TupleRefRef};
     pub use crate::system::system;
     pub use crate::system::system_wrap;
 

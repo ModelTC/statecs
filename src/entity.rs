@@ -11,6 +11,43 @@ pub trait TupleExtend {
     fn extend<T>(self, v: T) -> Self::AfterExtend<T>;
 }
 
+pub trait TupleRef {
+    type RefType<'a>
+    where
+        Self: 'a;
+    type MutRefType<'a>
+    where
+        Self: 'a;
+    fn ref_tuple(&self) -> Self::RefType<'_>;
+    fn mut_tuple(&mut self) -> Self::MutRefType<'_>;
+}
+
+pub trait TupleRefRef<'a> {
+    type RefType: 'a;
+    fn _ref_tuple(self) -> Self::RefType;
+}
+
+impl<'a, T> TupleRefRef<'a> for &'a T
+where
+    T: TupleRef,
+{
+    type RefType = T::RefType<'a>;
+
+    fn _ref_tuple(self) -> Self::RefType {
+        self.ref_tuple()
+    }
+}
+impl<'a, T> TupleRefRef<'a> for &'a mut T
+where
+    T: TupleRef,
+{
+    type RefType = T::MutRefType<'a>;
+
+    fn _ref_tuple(self) -> Self::RefType {
+        self.mut_tuple()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -78,6 +115,21 @@ macro_rules! impl_extend_merge {
             {
                 let ($($ids,)*) = self;
                 v$(.extend($ids))*
+            }
+        }
+        #[allow(non_snake_case)]
+        impl<$($ids,)*> $crate::entity::TupleRef for ($($ids,)*) {
+            type RefType<'a> = ($(&'a $ids,)*) where Self: 'a;
+            type MutRefType<'a> = ($(&'a mut $ids,)*) where Self: 'a;
+            #[allow(clippy::unused_unit)]
+            fn ref_tuple(&self) -> Self::RefType<'_> {
+                let ($($ids,)*) = self;
+                ($($ids,)*)
+            }
+            #[allow(clippy::unused_unit)]
+            fn mut_tuple(&mut self) -> Self::MutRefType<'_> {
+                let ($($ids,)*) = self;
+                ($($ids,)*)
             }
         }
     };

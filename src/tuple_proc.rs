@@ -39,20 +39,48 @@ macro_rules! cascade_fn {
 }
 
 #[macro_export]
-macro_rules! cascade_obj {
-    (($obj:expr, $val:expr) => $expr:expr) => {
-        $expr.into_tuple_processor().cascade_obj($obj, $val)
+macro_rules! inspect {
+    ($val:expr => $expr:expr) => {{
+        use $crate::IntoTupleProcessor;
+        use $crate::TupleRefRef;
+        $expr.into_tuple_processor().apply($val)
+    }};
+}
+
+#[macro_export]
+macro_rules! inspect_fn {
+    (once $expr:expr) => {{
+        let __e = $expr;
+        move |x| { $crate::inspect!(x => __e) }
+    }};
+    ($expr:expr) => {{
+        let mut __e = $expr;
+        fn do_ref_tuple<'a, T: $crate::TupleRefRef<'a>>(a: T) -> T::RefType {
+            a._ref_tuple()
+        }
+        move |x| { $crate::inspect!(do_ref_tuple(x) => &__e) }
+    }};
+}
+
+#[macro_export]
+macro_rules! mutate_fn {
+    (once $expr:expr) => {
+        let __e = $expr;
+        |x| { $crate::tuple_proc::mutate!(x => __e) }
+    };
+    ($expr:expr) => {
+        let mut __e = $expr;
+        |x| { $crate::tuple_proc::mutate!(x => &mut __e) }
     };
 }
 
 #[macro_export]
-macro_rules! cascade_obj_fn {
-    (ref $expr:expr) => {
-        |obj, x| cascade_obj!((obj, x) => $expr)
-    };
-    ($expr:expr) => {
-        move |obj, x| cascade_obj!((obj, x) => $expr)
-    };
+macro_rules! mutate {
+    ($val:expr => $expr:expr) => {{
+        use $crate::entity::TupleRefRef;
+        use $crate::IntoTupleProcessor;
+        $expr.into_tuple_processor().apply($val.mut_tuple())
+    }};
 }
 
 #[cfg(test)]
@@ -295,27 +323,12 @@ macro_rules! impl_tuple_proc {
                 let (r, b) = _E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
                 r.cascade_merge(b.merge(()))
             }
-        }
-        #[allow(non_snake_case)]
-        impl<Obj, F, OType, $($ids,)*> TupleProcessFn<F, ((Obj, ($($ids,)*)), OType)>
-        where
-            F: FnOnce(Obj, ($($ids,)*)) -> OType,
-        {
             #[system_wrap(
-                E: ($($ids,)*)
+                _E: ($($ids,)*)
             )]
-            pub fn cascade_obj<E, const I: usize, const J: usize>(
-                self,
-                obj: Obj,
-                e: E,
-            )
-            -> <OType as CascadeInto<I, J>>::Output<outof![E]>
-            where
-                outof![E]: TupleMerge,
-                OType: CascadeInto<I, J>
-            {
-                let (r, b) = E!(e => |($($ids,)*)| self.0(obj, ($($ids,)*)) => NoMerge);
-                r.cascade_merge(b.merge(()))
+            pub fn apply<_E>(self, e: _E) -> OType {
+                let (r, _) = _E!(e => |($($ids,)*)| self.0($($ids,)*) => NoMerge);
+                r
             }
         }
         };
